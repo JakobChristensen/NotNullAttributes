@@ -1,0 +1,21 @@
+﻿<?xml version="1.0"?>
+<package>
+  <metadata>
+    <id>NotNullAttributes</id>
+    <version>1.0.0.0</version>
+    <title>NotNull and CanBeNull attribute analyzer</title>
+    <authors>Jakob Christensen</authors>
+    <owners>Jakob Christensen</owners>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>Apply NotNull or CanBeNull attributes to method parameters, method returns and properties.</description>
+    <releaseNotes></releaseNotes>
+    <copyright>Copyright</copyright>
+    <frameworkAssemblies>
+      <frameworkAssembly assemblyName="System" targetFramework="" />
+    </frameworkAssemblies>
+  </metadata>
+  <files>
+    <file src="*.dll" target="tools\analyzers\" exclude="**\Microsoft.CodeAnalysis.*;**\System.Collections.Immutable.*;**\System.Reflection.Metadata.*" />
+    <file src="tools\*.ps1" target="tools\" />
+  </files>
+</package>
