@@ -1,5 +1,6 @@
 // © 2015 Sitecore Corporation A/S. All rights reserved.
 
+using System;
 using System.Collections.Immutable;
 using System.Linq;
 using Microsoft.CodeAnalysis;
@@ -40,6 +41,11 @@ namespace NotNullAttributes
                 return;
             }
 
+            if (IsDesignerFile(context))
+            {
+                return;
+            }
+
             if (method.MethodKind == MethodKind.PropertyGet)
             {
                 return;
@@ -56,62 +62,68 @@ namespace NotNullAttributes
 
         private void AnalyzeMethodParameters(SymbolAnalysisContext context, IMethodSymbol method)
         {
-            var parameters = method.Parameters.Where(p => p.RefKind != RefKind.Out && !p.IsExtern && p.Type.IsReferenceType).ToList();
+            var parameters = method.Parameters.Select(p => new ParameterDescriptor(p, p.RefKind == RefKind.Out || p.IsExtern || !p.Type.IsReferenceType)).ToArray();
 
-            // search for attributes in the inheritance heirarchy
+            // search for attributes in the inheritance hierarchy
             var currentMethod = method;
             while (currentMethod != null)
             {
-                for (var index = parameters.Count - 1; index >= 0; index--)
+                for (var index = 0; index < parameters.Length; index++)
                 {
                     var parameter = parameters[index];
-
-                    var p = currentMethod.Parameters.FirstOrDefault(n => n.Name == parameter.Name);
-                    if (p == null)
+                    if (parameter.HasAttribute)
                     {
                         continue;
                     }
 
-                    if (HasAttribute(p.GetAttributes()))
+                    var parm = currentMethod.Parameters.ElementAt(index);
+                    if (parm == null || parm.Type != parameter.Parameter.Type)
                     {
-                        parameters.Remove(parameter);
+                        continue;
                     }
+
+                    parameter.HasAttribute = HasAttribute(parm.GetAttributes());
                 }
 
                 currentMethod = currentMethod.OverriddenMethod;
+                if (IsFrameworkSymbol(currentMethod))
+                {
+                    break;
+                }
             }
 
             // search for attributes in interfaces
             var namedTypeSymbol = method.ContainingType;
             if (namedTypeSymbol != null)
             {
-                foreach (var intf in namedTypeSymbol.AllInterfaces)
+                foreach (var intf in namedTypeSymbol.AllInterfaces.Where(i => !IsFrameworkSymbol(i)))
                 {
                     // todo: find method with the right signature
                     foreach (var interfaceMethod in intf.GetMembers(method.Name).OfType<IMethodSymbol>())
                     {
-                        for (var index = parameters.Count - 1; index >= 0; index--)
+                        for (var index = parameters.Length - 1; index >= 0; index--)
                         {
                             var parameter = parameters[index];
-
-                            var p = interfaceMethod.Parameters.FirstOrDefault(n => n.Name == parameter.Name);
-                            if (p == null)
+                            if (parameter.HasAttribute)
                             {
                                 continue;
                             }
 
-                            if (HasAttribute(p.GetAttributes()))
+                            var parm = interfaceMethod.Parameters.ElementAt(index);
+                            if (parm == null || parm.Type != parameter.Parameter.Type)
                             {
-                                parameters.Remove(parameter);
+                                continue;
                             }
+
+                            parameter.HasAttribute = HasAttribute(parm.GetAttributes());
                         }
                     }
                 }
             }
 
-            foreach (var parameter in parameters)
+            foreach (var parameter in parameters.Where(p => !p.HasAttribute))
             {
-                var diagnostic = Diagnostic.Create(MethodParameterRule, parameter.Locations.First(), parameter.Name);
+                var diagnostic = Diagnostic.Create(MethodParameterRule, parameter.Parameter.Locations.First(), parameter.Parameter.Name);
                 context.ReportDiagnostic(diagnostic);
             }
         }
@@ -138,13 +150,17 @@ namespace NotNullAttributes
                 }
 
                 currentMethod = currentMethod.OverriddenMethod;
+                if (IsFrameworkSymbol(currentMethod))
+                {
+                    break;
+                }
             }
 
             // search for attributes in interfaces
             var namedTypeSymbol = method.ContainingType;
             if (namedTypeSymbol != null)
             {
-                foreach (var intf in namedTypeSymbol.AllInterfaces)
+                foreach (var intf in namedTypeSymbol.AllInterfaces.Where(i => !IsFrameworkSymbol(i)))
                 {
                     // todo: find method with the right signature
                     foreach (var interfaceMethod in intf.GetMembers(method.Name).OfType<IMethodSymbol>())
@@ -174,7 +190,12 @@ namespace NotNullAttributes
                 return;
             }
 
-            // search for attributes in the inheritance heirarchy
+            if (IsDesignerFile(context))
+            {
+                return;
+            }
+
+            // search for attributes in the inheritance hierarchy
             var currentProperty = property;
             while (currentProperty != null)
             {
@@ -184,13 +205,17 @@ namespace NotNullAttributes
                 }
 
                 currentProperty = currentProperty.OverriddenProperty;
+                if (IsFrameworkSymbol(currentProperty))
+                {
+                    break;
+                }
             }
 
             // search for attributes in interfaces
             var namedTypeSymbol = property.ContainingType;
             if (namedTypeSymbol != null)
             {
-                foreach (var intf in namedTypeSymbol.AllInterfaces)
+                foreach (var intf in namedTypeSymbol.AllInterfaces.Where(i => !IsFrameworkSymbol(i)))
                 {
                     // todo: find method with the right signature
                     foreach (var interfaceProperty in intf.GetMembers(property.Name).OfType<IPropertySymbol>())
@@ -210,6 +235,88 @@ namespace NotNullAttributes
         private bool HasAttribute(ImmutableArray<AttributeData> attributes)
         {
             return attributes.Any(a => a.AttributeClass.Name == "NotNullAttribute" || a.AttributeClass.Name == "CanBeNullAttribute");
+        }
+
+        private static bool IsDesignerFile(SymbolAnalysisContext context)
+        {
+            var compilation = context.Compilation;
+            if (compilation != null)
+            {
+                foreach (var syntaxTree in compilation.SyntaxTrees)
+                {
+                    var filePath = syntaxTree.FilePath;
+                    if (string.IsNullOrEmpty(filePath))
+                    {
+                        continue;
+                    }
+
+                    if (filePath.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+
+                    if (filePath.EndsWith(".Generated.cs", StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            foreach (var location in context.Symbol.Locations)
+            {
+                var sourceTree = location.SourceTree;
+                if (sourceTree == null)
+                {
+                    continue;
+                }
+
+                var filePath = sourceTree.FilePath;
+                if (string.IsNullOrEmpty(filePath))
+                {
+                    continue;
+                }
+
+                if (filePath.EndsWith(".Designer.cs", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+
+                if (filePath.EndsWith(".Generated.cs", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private bool IsFrameworkSymbol(ISymbol symbol)
+        {
+            if (symbol == null)
+            {
+                return true;
+            }
+
+            var assemblyName = symbol.ContainingAssembly.Name;
+            if (assemblyName.StartsWith("System.", StringComparison.OrdinalIgnoreCase) || assemblyName.IndexOf("mscorlib", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                return true;
+            }
+
+            return false;
+        }
+
+        private class ParameterDescriptor
+        {
+            public ParameterDescriptor(IParameterSymbol parameter, bool hasAttribute)
+            {
+                Parameter = parameter;
+                HasAttribute = hasAttribute;
+            }
+
+            public bool HasAttribute { get; set; }
+
+            public IParameterSymbol Parameter { get; }
         }
     }
 }
